@@ -564,5 +564,392 @@ class UserServiceTest {...}
     }
 ```
 
+## Dependency injection in JUnit5
+**Сначала нужно определить ParameterResolver для класса, чью объекты мы хотим внедрять:**
+```java
+package com.angubaidullin.testing.paramresolver;
 
+import com.angubaidullin.testing.service.UserService;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.ParameterContext;
+import org.junit.jupiter.api.extension.ParameterResolutionException;
+import org.junit.jupiter.api.extension.ParameterResolver;
+
+public class UserServiceParamResolver implements ParameterResolver {
+    @Override
+    public boolean supportsParameter(ParameterContext parameterContext, ExtensionContext extensionContext) throws ParameterResolutionException {
+        return parameterContext.getParameter().getType() == UserService.class;
+    }
+
+    @Override
+    public Object resolveParameter(ParameterContext parameterContext, ExtensionContext extensionContext) throws ParameterResolutionException {
+        ExtensionContext.Store store = extensionContext.getStore(ExtensionContext.Namespace.create(UserService.class));
+
+        return store.getOrComputeIfAbsent(UserService.class, it -> new UserService());
+    }
+}
+```
+
+**Далее можно получить нужную зависимость через конструктор или метод, помеченный аннотацией @BeforeEach:**
+```java
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.DisplayName.class)
+//Для возможно использования DI также нужно пометить класс аннотацией @ExtendsWith и передать в парметры аннотации резолвер
+@ExtendWith({
+        UserServiceParamResolver.class
+})
+class UserServiceTest {
+
+    private UserService userService;
+    private static final User IVAN = User.of(1, "Ivan", "123");
+    private static final User PETR = User.of(2, "Petr", "456");
+
+
+    @BeforeAll
+    void init() {
+        System.out.println("Before All");
+    }
+
+    @BeforeEach
+    void prepare(UserService userService) {
+        System.out.println("Before each test: " + this);
+        this.userService = userService;
+    }
+    //Другие тесты
+}    
+```
+
+## Parametrized Tests
+**В JUnit5 появилась возможность использовать параметризованные тесты.**
+
+Первым делом подключим новую зависимость:
+```xml
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <version>5.8.2</version>
+            <scope>test</scope>
+        </dependency>
+```
+
+Напрмер, мы хотим протестировать наш метод `login()` большинством тест кейсов (когда мы вводим существующего юзера,
+когда вводим юзера, которого нет, когда вводим невалидные данные и т.д.). Одним тестом мы можем закрыть большинство тест
+кейсов.
+```java
+        @ParameterizedTest(name = "{arguments} test")
+        @MethodSource("com.angubaidullin.testing.service.UserServiceTest#getArgsForLoginMethod")
+        void loginParamTest(String username, String password, Optional<User> user) {
+            userService.addAll(IVAN, PETR);
+
+            Optional<User> maybeUser = userService.login(username, password);
+            assertThat(maybeUser).isEqualTo(user);
+        }
+
+        public static Stream<Arguments> getArgsForLoginMethod() {
+            return Stream.of(
+                    Arguments.of("Ivan", "123", Optional.of(IVAN)),
+                    Arguments.of("Petr", "456", Optional.of(PETR)),
+                    Arguments.of("Petr", "djhs", Optional.empty()),
+                    Arguments.of("gjf", "123", Optional.empty())
+            );
+        }
+```
+## Flaky tests Timeouts
+### Flaky test
+**Flaky test** - нестабильный тест. Когда мы запускаем тест, он может то проходить, то падать в рандомных местах.
+Это случается из-за неправильной реализации тестов, например, тест зависит от порядка его запуска. Также это бывает
+с интеграционными тестами. Если в коде есть такие тесты, которые нужно подправить, но заниматься этим мы не хотим, то 
+то можно пометить такой тест аннотацией и оставить в его параметрах комментарий `@Disabled("flaky, need to see and fix")`.
+Аннотация `@RepeatedTest(value=5, name=RepeatedTest.LONG_DISPLAY_NAME)`, позволяет запустить один тест несколько раз. 
+Полезно, когда мы подправили flaky test и хотим проверить, как будет работать при множественном запуске.
+
+### Timeouts
+Таймауты позволяют установить время в течение которого, он должен отработать.
+```java
+        @Test
+        void loginMethodFunctionalityPerformance() {
+            Optional<User> ivan = assertTimeout(Duration.ofMillis(200L), () -> {
+            //Thread.sleep(300);
+                return userService.login("Ivan", "123");
+            });
+        }
+```
+
+```java
+        @Test
+        @Timeout(value = 200, unit = TimeUnit.MILLISECONDS)
+        void loginMethodFunctionalityPerformance2() throws InterruptedException {
+            userService.add(IVAN);
+            Optional<User> user = userService.login(IVAN.getUsername(), IVAN.getPassword());
+            //Thread.sleep(300);
+            assertThat(user).isPresent();
+            user.ifPresent(u -> assertThat(u).isEqualTo(IVAN));
+        }
+```
+
+**Таймауты лучшего всего подходят для интеграционных тестов**
+
+## Extension Model
+![extention_model](src/main/resources/md_img/JUnit5_extention_model.PNG)
+
+---
+
+![test_lifecycle_callbacks](src/main/resources/md_img/test_lifecycle_callbacks.PNG)
+
+---
+
+#### TestLifecycle callbacks
+**Будет срабатывать перед методами, помеченными аннотациями `@BeforeAll` & `@AfterAll`
+```java
+package com.angubaidullin.testing.extetion.beforeafterallextention;
+
+import org.junit.jupiter.api.extension.AfterAllCallback;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
+
+public class GlobalExtension implements BeforeAllCallback, AfterAllCallback {
+    @Override
+    public void beforeAll(ExtensionContext extensionContext) throws Exception {
+        System.out.println("Before All callback");
+    }
+
+    @Override
+    public void afterAll(ExtensionContext extensionContext) throws Exception {
+        System.out.println("After All callback");
+    }
+}
+```
+#### Test Instance post-processing
+**Сработает после создания объекта класса с тестовыми методами:**
+```java
+package com.angubaidullin.testing.postprocessing;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.TestInstancePostProcessor;
+
+import java.lang.reflect.Field;
+
+public class PostProcessingExtension implements TestInstancePostProcessor {
+    @Override
+    public void postProcessTestInstance(Object o, ExtensionContext extensionContext) throws Exception {
+        System.out.println("Post processing test instance");
+        Field[] declaredFields = o.getClass().getDeclaredFields();
+        for (Field field: declaredFields) {
+            if (field.isAnnotationPresent(Test.class)) {
+
+            }
+        }
+    }
+}
+```
+
+#### Conditional test extension
+**extension для проверки условий**
+```java
+package com.angubaidullin.testing.extetion.conditional;
+
+import org.junit.jupiter.api.extension.ConditionEvaluationResult;
+import org.junit.jupiter.api.extension.ExecutionCondition;
+import org.junit.jupiter.api.extension.ExtensionContext;
+
+public class ConditionalExtension implements ExecutionCondition {
+    @Override
+    public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext extensionContext) {
+        return System.getProperty("skip") !=null
+                ? ConditionEvaluationResult.disabled("test is skipped"):
+                ConditionEvaluationResult.enabled("test is enabled");
+    }
+}
+```
+
+#### Exception handling
+**Для обработки исключений**
+```java
+package com.angubaidullin.testing.extetion.exceptionhandling;
+
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
+
+import java.io.IOException;
+
+public class ThrowableExtension implements TestExecutionExceptionHandler {
+    @Override
+    public void handleTestExecutionException(ExtensionContext extensionContext, Throwable throwable) throws Throwable {
+        if (throwable instanceof IOException) {
+            throw throwable;
+        }
+    }
+}
+```
+
+**Подключение к тестовому классу** происходит с помощью аннотации `ExtendWith()`
+```java
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.DisplayName.class)
+@ExtendWith({
+        UserServiceParamResolver.class,
+        GlobalExtension.class,
+        PostProcessingExtension.class,
+        ConditionalExtension.class,
+        ThrowableExtension.class
+})
+class UserServiceTest {
+    //Логика тестов
+}
+```
+
+---
+
+## Mockito
+**Mockito Test Doubles**
+![mockito_test_doubles](src/main/resources/md_img/mockito_test_doubles.PNG)
+
+**Подключим зависимость Mockito**
+```xml
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>3.9.0</version>
+            <scope>test</scope>
+        </dependency>
+```
+
+### Mock
+```java
+package com.angubaidullin.testing.dao;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
+public class UserDao {
+
+    public boolean delete(Integer id) {
+        try (Connection connection = DriverManager.getConnection("url", "username", "pass")) {
+            return true;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+```
+
+
+```java
+package com.angubaidullin.testing.service;
+
+import com.angubaidullin.testing.dao.UserDao;
+import com.angubaidullin.testing.dto.User;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class UserService {
+
+    private UserDao userDao;
+    private List<User> userList = new ArrayList<User>();
+
+    public UserService(UserDao userDao) {
+        this.userDao = userDao;
+    }
+    public UserService() {
+
+    }
+
+    //Какая-то логика
+
+    public boolean deleteUserById(Integer id) {
+        return userDao.delete(id);
+    }
+}
+
+```
+
+```java
+package com.angubaidullin.testing.service;
+
+import com.angubaidullin.testing.dao.UserDao;
+import com.angubaidullin.testing.dto.User;
+import com.angubaidullin.testing.extetion.conditional.ConditionalExtension;
+import com.angubaidullin.testing.extetion.exceptionhandling.ThrowableExtension;
+import com.angubaidullin.testing.extetion.beforeafterallextention.GlobalExtension;
+import com.angubaidullin.testing.extetion.paramresolver.UserServiceParamResolver;
+import com.angubaidullin.testing.postprocessing.PostProcessingExtension;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.Mockito;
+
+import java.io.IOException;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.DisplayName.class)
+@ExtendWith({
+        UserServiceParamResolver.class,
+        GlobalExtension.class,
+        PostProcessingExtension.class,
+        ConditionalExtension.class,
+})
+class UserServiceTest {
+
+    private UserDao userDao;
+    private UserService userService;
+    private static final User IVAN = User.of(1, "Ivan", "123");
+    private static final User PETR = User.of(2, "Petr", "456");
+    //Какая-то логика
+    @BeforeEach
+    void prepare() {
+        System.out.println("Before each test: " + this);
+        this.userDao = Mockito.mock(UserDao.class);
+        this.userService = new UserService(this.userDao);
+    }
+    //Какая-то логика
+    @Test
+    void shouldDeleteExisted() {
+        userService.add(IVAN);
+        
+//        Mockito.doReturn(true).when(userDao).delete(IVAN.getId());
+//        Mockito.doReturn(true).when(userDao).delete(Mockito.anyInt());
+        Mockito.when(userDao.delete(IVAN.getId())).thenReturn(true);
+        
+        boolean result = userService.deleteUserById(IVAN.getId());
+        assertThat(result).isTrue();
+    }
+}
+```
+
+# Mockito Spy
+```java
+    @BeforeEach
+    void prepare() {
+        System.out.println("Before each test: " + this);
+        this.userDao = Mockito.spy(new UserDao());
+        this.userService = new UserService(this.userDao);
+    }
+```
+
+```java
+    @Test
+    void shouldDeleteExisted() {
+        userService.add(IVAN);
+        Mockito.doReturn(true).when(userDao).delete(Mockito.anyInt());
+        boolean result = userService.deleteUserById(IVAN.getId());
+        assertThat(result).isTrue();
+    }
+```
+
+```java
+Mockito.verify(userDao, Mockito.times(3).delete(IVAN.getId()));
+```
 

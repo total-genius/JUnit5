@@ -1,5 +1,6 @@
 package com.angubaidullin.testing.service;
 
+import com.angubaidullin.testing.dao.UserDao;
 import com.angubaidullin.testing.dto.User;
 
 import java.util.*;
@@ -7,7 +8,16 @@ import java.util.stream.Collectors;
 
 public class UserService {
 
+    private UserDao userDao;
     private List<User> userList = new ArrayList<User>();
+
+    public UserService(UserDao userDao) {
+        this.userDao = userDao;
+    }
+    public UserService() {
+
+    }
+
 
     public List<User> getAll() {
 
@@ -34,5 +44,9 @@ public class UserService {
         return userList.stream()
                 .filter(user -> user.getUsername().equals(username) && user.getPassword().equals(password))
                 .findFirst();
+    }
+
+    public boolean deleteUserById(Integer id) {
+        return userDao.delete(id);
     }
 }
